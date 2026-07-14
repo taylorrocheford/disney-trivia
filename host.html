@@ -64,7 +64,7 @@
           <div class="wheel-pointer">▼</div>
           <canvas id="wheel" width="440" height="440"></canvas>
         </div>
-        <button id="spinBtn" class="btn big" style="margin-top:16px;">Spin the Wheel 🎡</button>
+        <div style="margin-top:16px;"><button id="spinBtn" class="btn big">Spin the Wheel 🎡</button></div>
       </div>
       <!-- category stage -->
       <div id="catStage" class="hidden">
@@ -322,13 +322,18 @@
         const start = wheelRot % (Math.PI * 2);
         const end = spins + target;
         const dur = 3600, t0 = performance.now();
+        let done = false;
+        const finish = () => { if (done) return; done = true; drawWheel(end); resolve(); };
         function frame(t) {
+          if (done) return;
           const p = Math.min(1, (t - t0) / dur);
           const ease = 1 - Math.pow(1 - p, 3); // ease-out cubic
           drawWheel(start + (end - start) * ease);
-          if (p < 1) requestAnimationFrame(frame); else resolve();
+          if (p < 1) requestAnimationFrame(frame); else finish();
         }
         requestAnimationFrame(frame);
+        // Fallback: rAF is paused in hidden tabs, so guarantee the spin resolves.
+        setTimeout(finish, dur + 500);
       });
     }
 

@@ -336,6 +336,7 @@ input.code-input {
 .pod.third { height: 130px; }
 
 /* Spin-the-wheel */
+#wheelStage, #catStage { text-align: center; width: 100%; }
 .wheel-wrap { position: relative; display: inline-block; margin: 8px auto 0; }
 .wheel-wrap canvas { max-width: min(440px, 82vw); height: auto; filter: drop-shadow(0 12px 30px rgba(0,0,0,.45)); }
 .wheel-pointer {
