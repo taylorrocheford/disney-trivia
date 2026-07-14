@@ -291,6 +291,11 @@
     }
     function stopTimer() { if (timerInt) { clearInterval(timerInt); timerInt = null; } }
 
+    // Phones throttle timers when the screen locks or the app is backgrounded;
+    // refresh instantly the moment the player returns to the tab.
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+    window.addEventListener("focus", () => tick());
+
     if (me.code && me.playerId) enterWaiting();
   </script>
 </body>

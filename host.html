@@ -323,6 +323,10 @@
       return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
     }
 
+    // Phones/laptops throttle timers when a tab is hidden; refresh instantly on return.
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+    window.addEventListener("focus", () => tick());
+
     // If we restored a live game, jump straight back in.
     if (game.code && game.hostToken) enterLobby();
   </script>
