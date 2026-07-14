@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Host · Disney Movie Trivia</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" />
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- ===== SETUP ===== -->
+    <section id="setup" class="center-screen">
+      <h1 class="brand">🎬 Host a Game</h1>
+      <p class="tagline">Pick your settings, then share the room code that appears.</p>
+      <div class="card" style="margin-top:26px; width:min(460px,92vw); text-align:left;">
+        <label for="num">How many questions?</label>
+        <select id="num">
+          <option value="8">8 — quick round (~6 min)</option>
+          <option value="12" selected>12 — classic (~10 min)</option>
+          <option value="16">16 — long haul (~14 min)</option>
+          <option value="36">36 — the whole vault</option>
+        </select>
+        <div style="height:16px;"></div>
+        <label for="seconds">Seconds per question</label>
+        <select id="seconds">
+          <option value="15">15 — fast &amp; furious</option>
+          <option value="20" selected>20 — recommended</option>
+          <option value="30">30 — relaxed</option>
+        </select>
+        <div style="height:22px;"></div>
+        <button id="createBtn" class="btn big block">Create Room →</button>
+        <div id="setupErr" class="error"></div>
+      </div>
+    </section>
+
+    <!-- ===== LOBBY ===== -->
+    <section id="lobby" class="hidden center-screen">
+      <p class="q-cat">Room Code — join at</p>
+      <p class="tagline" id="joinUrl" style="margin-top:2px; color:var(--gold-2); font-weight:800;"></p>
+      <div class="code-badge" id="lobbyCode" style="margin:8px 0 18px;"></div>
+      <p class="status-line"><span class="big-count" id="playerCount">0</span> player(s) in the castle</p>
+      <div class="chips" id="lobbyChips" style="margin:18px 0;"></div>
+      <button id="startBtn" class="btn big" disabled>Start Game 🎉</button>
+      <p class="muted" style="margin-top:12px;">Waiting for players… the Start button lights up once someone joins.</p>
+    </section>
+
+    <!-- ===== QUESTION ===== -->
+    <section id="question" class="hidden">
+      <div class="q-meta">
+        <span class="q-cat" id="qCat"></span>
+        <span class="muted" id="qProgress"></span>
+      </div>
+      <div class="progress" style="margin:6px 0 4px;"><span id="qBar" style="width:100%"></span></div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin:10px 0 4px;">
+        <span class="status-line"><b id="answeredCount">0</b> answered</span>
+        <span class="timer-num" id="timer">20</span>
+      </div>
+      <h2 class="q-text" id="qText"></h2>
+      <div class="answers" id="qAnswers"></div>
+      <div style="text-align:center; margin-top:22px;">
+        <button id="skipBtn" class="btn ghost">Reveal Answer Now</button>
+      </div>
+    </section>
+
+    <!-- ===== REVEAL ===== -->
+    <section id="reveal" class="hidden">
+      <div class="q-meta">
+        <span class="q-cat" id="rCat"></span>
+        <span class="muted" id="rProgress"></span>
+      </div>
+      <h2 class="q-text" id="rText"></h2>
+      <div class="answers" id="rAnswers"></div>
+      <div class="fact" id="rFact"></div>
+      <h3 style="text-align:center; margin:26px 0 4px; color:var(--gold-2);">🏆 Standings</h3>
+      <ol class="board" id="rBoard"></ol>
+      <div style="text-align:center; margin-top:22px;">
+        <button id="nextBtn" class="btn big">Next Question →</button>
+      </div>
+    </section>
+
+    <!-- ===== ENDED ===== -->
+    <section id="ended" class="hidden center-screen">
+      <h1 class="brand">✨ Final Results ✨</h1>
+      <div class="podium" id="podium"></div>
+      <ol class="board" id="finalBoard"></ol>
+      <div class="row" style="max-width:420px; margin-top:24px;">
+        <button id="againBtn" class="btn big">Play Again</button>
+        <a class="btn ghost big" href="index.html">Home</a>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    const API = "/api/game";
+    const $ = (id) => document.getElementById(id);
+    const sections = ["setup", "lobby", "question", "reveal", "ended"];
+    function show(id) { sections.forEach(s => $(s).classList.toggle("hidden", s !== id)); }
+
+    const SHAPES = ["triangle", "diamond", "circle", "square"];
+
+    let game = { code: null, hostToken: null };
+    let poll = null;
+    let lastStatus = null;
+    let timerInt = null;
+    let endedShown = false;
+
+    // Restore an in-progress hosted game across refreshes.
+    try {
+      const saved = JSON.parse(localStorage.getItem("dt_host") || "null");
+      if (saved && saved.code && saved.hostToken) game = saved;
+    } catch {}
+
+    async function api(action, extra) {
+      const r = await fetch(API + "?action=" + action, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({ action }, extra || {})),
+      });
+      return r.json();
+    }
+
+    // ---- Create ----
+    $("createBtn").onclick = async () => {
+      $("setupErr").textContent = "";
+      $("createBtn").disabled = true;
+      const res = await api("create", {});
+      if (!res.ok) {
+        $("createBtn").disabled = false;
+        $("setupErr").textContent = res.error === "storage-not-connected"
+          ? "Cloud storage isn't connected yet — see the README step 2."
+          : "Couldn't create a room. Try again.";
+        return;
+      }
+      game = { code: res.code, hostToken: res.hostToken };
+      localStorage.setItem("dt_host", JSON.stringify(game));
+      enterLobby();
+    };
+
+    function enterLobby() {
+      $("lobbyCode").textContent = game.code;
+      const base = location.origin + location.pathname.replace(/host\.html$/, "");
+      $("joinUrl").textContent = (location.host + base.replace(location.origin, "") + "play.html").replace(/\/+/g, "/");
+      show("lobby");
+      startPolling();
+    }
+
+    // ---- Settings + start ----
+    $("startBtn").onclick = async () => {
+      $("startBtn").disabled = true;
+      await api("start", {
+        code: game.code, hostToken: game.hostToken,
+        num: parseInt($("num").value, 10),
+        seconds: parseInt($("seconds").value, 10),
+      });
+    };
+    $("skipBtn").onclick = () => api("reveal", { code: game.code, hostToken: game.hostToken });
+    $("nextBtn").onclick = () => { $("nextBtn").disabled = true; api("next", { code: game.code, hostToken: game.hostToken }); };
+    $("againBtn").onclick = async () => { endedShown = false; await api("reset", { code: game.code, hostToken: game.hostToken }); };
+
+    // ---- Polling / render ----
+    function startPolling() {
+      if (poll) clearInterval(poll);
+      tick();
+      poll = setInterval(tick, 1500);
+    }
+
+    async function tick() {
+      if (!game.code) return;
+      const s = await api("state", { code: game.code, hostToken: game.hostToken, host: 1 });
+      if (!s.ok) return;
+      render(s);
+    }
+
+    function render(s) {
+      // Lobby
+      if (s.status === "lobby") {
+        show("lobby");
+        $("playerCount").textContent = s.playerCount || 0;
+        const chips = $("lobbyChips");
+        chips.innerHTML = "";
+        (s.lobby || []).forEach(p => {
+          const el = document.createElement("div");
+          el.className = "chip";
+          el.textContent = p.name;
+          chips.appendChild(el);
+        });
+        $("startBtn").disabled = (s.playerCount || 0) < 1;
+      }
+
+      // Question
+      if (s.status === "question") {
+        show("question");
+        renderQuestion(s);
+      }
+
+      // Reveal
+      if (s.status === "reveal") {
+        stopTimer();
+        show("reveal");
+        renderReveal(s);
+        $("nextBtn").disabled = false;
+        $("nextBtn").textContent = (s.qNumber >= s.qCount) ? "See Final Results →" : "Next Question →";
+      }
+
+      // Ended
+      if (s.status === "ended") {
+        stopTimer();
+        show("ended");
+        if (!endedShown) { renderEnded(s); endedShown = true; }
+      }
+
+      lastStatus = s.status;
+    }
+
+    function optionEl(i, text, cls) {
+      const b = document.createElement("div");
+      b.className = "answer a" + i + (cls || "");
+      const sh = document.createElement("span");
+      sh.className = "shape " + SHAPES[i];
+      b.appendChild(sh);
+      const t = document.createElement("span");
+      t.textContent = text;
+      b.appendChild(t);
+      return b;
+    }
+
+    function renderQuestion(s) {
+      const q = s.question; if (!q) return;
+      $("qCat").textContent = q.category;
+      $("qProgress").textContent = "Question " + s.qNumber + " of " + s.qCount;
+      $("qText").textContent = q.text;
+      $("answeredCount").textContent = s.answered || 0;
+      const box = $("qAnswers");
+      // Only rebuild options when the question changes.
+      if (box.dataset.n !== String(s.current)) {
+        box.innerHTML = "";
+        q.options.forEach((opt, i) => box.appendChild(optionEl(i, opt)));
+        box.dataset.n = String(s.current);
+      }
+      runTimer(s);
+    }
+
+    function runTimer(s) {
+      stopTimer();
+      const total = s.seconds * 1000;
+      const update = () => {
+        const elapsed = (Date.now() - s.qStart) + (s.now - s.qStart >= 0 ? 0 : 0);
+        const left = Math.max(0, total - (Date.now() - s.qStart));
+        const secs = Math.ceil(left / 1000);
+        $("timer").textContent = secs;
+        $("qBar").style.width = (100 * left / total) + "%";
+        if (left <= 0) {
+          stopTimer();
+          // Auto-reveal when the clock runs out.
+          api("reveal", { code: game.code, hostToken: game.hostToken });
+        }
+      };
+      update();
+      timerInt = setInterval(update, 200);
+    }
+    function stopTimer() { if (timerInt) { clearInterval(timerInt); timerInt = null; } }
+
+    function renderReveal(s) {
+      const q = s.question; if (!q) return;
+      $("rCat").textContent = q.category;
+      $("rProgress").textContent = "Question " + s.qNumber + " of " + s.qCount;
+      $("rText").textContent = q.text;
+      const box = $("rAnswers");
+      box.innerHTML = "";
+      const dist = q.dist || [0,0,0,0];
+      q.options.forEach((opt, i) => {
+        const cls = (i === q.correct) ? " right" : " dim";
+        const el = optionEl(i, opt, cls);
+        const c = document.createElement("span");
+        c.className = "count";
+        c.textContent = dist[i];
+        el.appendChild(c);
+        box.appendChild(el);
+      });
+      $("rFact").innerHTML = "<b>" + (q.options[q.correct]) + ".</b> " + (q.fact || "");
+      renderBoard($("rBoard"), s.board, 6, true);
+    }
+
+    function renderBoard(ol, board, limit, showDelta) {
+      ol.innerHTML = "";
+      (board || []).slice(0, limit).forEach(p => {
+        const li = document.createElement("li");
+        const streak = p.streak >= 2 ? " 🔥" + p.streak : "";
+        li.innerHTML =
+          '<span class="rank">' + p.rank + '</span>' +
+          '<span class="pname">' + escapeHtml(p.name) + streak + '</span>' +
+          '<span class="pscore">' + p.score +
+          (showDelta && p.lastPoints > 0 ? '<span class="delta">+' + p.lastPoints + '</span>' : '') +
+          '</span>';
+        ol.appendChild(li);
+      });
+    }
+
+    function renderEnded(s) {
+      const board = s.board || [];
+      const podium = $("podium");
+      podium.innerHTML = "";
+      const order = [1, 0, 2]; // second, first, third for a real podium
+      const medals = ["🥇", "🥈", "🥉"];
+      const classes = ["first", "second", "third"];
+      order.forEach(rankIdx => {
+        const p = board[rankIdx];
+        if (!p) return;
+        const div = document.createElement("div");
+        div.className = "pod " + classes[rankIdx];
+        div.innerHTML = '<div class="medal">' + medals[rankIdx] + '</div>' +
+          '<div class="pn">' + escapeHtml(p.name) + '</div>' +
+          '<div class="ps">' + p.score + '</div>';
+        podium.appendChild(div);
+      });
+      renderBoard($("finalBoard"), board, 20, false);
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+    }
+
+    // If we restored a live game, jump straight back in.
+    if (game.code && game.hostToken) enterLobby();
+  </script>
+</body>
+</html>

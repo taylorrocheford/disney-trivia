@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>Play · Disney Movie Trivia</title>
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📱</text></svg>" />
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- ===== JOIN ===== -->
+    <section id="join" class="center-screen">
+      <div style="font-size:52px;">🏰</div>
+      <h1 class="brand" style="font-size:clamp(26px,7vw,44px);">Join the Game</h1>
+      <div class="card" style="margin-top:22px; width:min(420px,94vw); text-align:left;">
+        <label for="code">Room Code</label>
+        <input id="code" class="code-input" maxlength="4" autocomplete="off" autocapitalize="characters" placeholder="ABCD" />
+        <div style="height:16px;"></div>
+        <label for="name">Your Name</label>
+        <input id="name" maxlength="20" autocomplete="off" placeholder="e.g. Ariel" />
+        <div style="height:20px;"></div>
+        <button id="joinBtn" class="btn big block">Enter Castle →</button>
+        <div id="joinErr" class="error"></div>
+      </div>
+    </section>
+
+    <!-- ===== WAITING (lobby) ===== -->
+    <section id="waiting" class="hidden center-screen">
+      <div style="font-size:56px;">✨</div>
+      <h1 class="brand" id="hiName"></h1>
+      <p class="tagline">You're in! Watch the host's screen — the game starts any second.</p>
+      <p class="status-line">Room <b id="waitCode" style="color:var(--gold-2);"></b></p>
+    </section>
+
+    <!-- ===== ANSWERING ===== -->
+    <section id="answer" class="hidden">
+      <div class="q-meta">
+        <span class="q-cat" id="pCat"></span>
+        <span class="muted" id="pProgress"></span>
+      </div>
+      <div class="progress" style="margin:6px 0 14px;"><span id="pBar" style="width:100%"></span></div>
+      <h2 class="q-text" id="pText" style="font-size:clamp(20px,5vw,30px);"></h2>
+      <div class="answers" id="pAnswers"></div>
+    </section>
+
+    <!-- ===== LOCKED / RESULT ===== -->
+    <section id="result" class="hidden center-screen">
+      <div id="resultIcon" style="font-size:70px;"></div>
+      <h1 class="brand" id="resultText" style="font-size:clamp(28px,8vw,48px);"></h1>
+      <p class="status-line" id="resultSub"></p>
+      <div class="card" style="margin-top:20px; width:min(340px,90vw);">
+        <div class="muted" style="font-size:14px;">YOUR SCORE</div>
+        <div class="big-count" id="myScore">0</div>
+        <div class="muted" id="myRank" style="margin-top:4px;"></div>
+      </div>
+    </section>
+
+    <!-- ===== FINAL ===== -->
+    <section id="final" class="hidden center-screen">
+      <div id="finalIcon" style="font-size:64px;">🎉</div>
+      <h1 class="brand" id="finalPlace"></h1>
+      <div class="card" style="margin-top:18px; width:min(340px,90vw);">
+        <div class="muted" style="font-size:14px;">FINAL SCORE</div>
+        <div class="big-count" id="finalScore">0</div>
+      </div>
+      <p class="status-line" style="margin-top:18px;">Thanks for playing! ✨</p>
+      <a class="btn ghost" href="index.html" style="margin-top:10px;">Home</a>
+    </section>
+
+  </div>
+
+  <script>
+    const API = "/api/game";
+    const $ = (id) => document.getElementById(id);
+    const sections = ["join", "waiting", "answer", "result", "final"];
+    function show(id) { sections.forEach(s => $(s).classList.toggle("hidden", s !== id)); }
+    const SHAPES = ["triangle", "diamond", "circle", "square"];
+
+    let me = { code: null, playerId: null, name: null };
+    let poll = null;
+    let timerInt = null;
+    let renderedQ = -1;   // which question number we've drawn answer buttons for
+    let answeredQ = -1;   // which question we've locked an answer on
+    let finalShown = false;
+
+    try {
+      const saved = JSON.parse(localStorage.getItem("dt_player") || "null");
+      if (saved && saved.code && saved.playerId) me = saved;
+    } catch {}
+
+    async function api(action, extra) {
+      const r = await fetch(API + "?action=" + action, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(Object.assign({ action }, extra || {})),
+      });
+      return r.json();
+    }
+
+    // Prefill code from ?code= or #code
+    const urlCode = (new URLSearchParams(location.search).get("code") || location.hash.replace("#", "")).toUpperCase();
+    if (urlCode) $("code").value = urlCode.slice(0, 4);
+
+    $("code").addEventListener("input", e => { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4); });
+
+    $("joinBtn").onclick = async () => {
+      $("joinErr").textContent = "";
+      const code = $("code").value.trim().toUpperCase();
+      const name = $("name").value.trim();
+      if (code.length < 4) { $("joinErr").textContent = "Enter the 4-character room code."; return; }
+      if (!name) { $("joinErr").textContent = "Add a name so you show up on the board."; return; }
+      $("joinBtn").disabled = true;
+      const res = await api("join", { code, name });
+      $("joinBtn").disabled = false;
+      if (!res.ok) {
+        const msg = {
+          "game-not-found": "No game with that code. Double-check with your host.",
+          "game-started": "That game already started — ask the host for a fresh room.",
+          "game-full": "The room is full (35 players max).",
+          "name-required": "Add a name so you show up on the board.",
+          "storage-not-connected": "The game isn't fully set up yet — tell your host.",
+        }[res.error] || "Couldn't join. Try again.";
+        $("joinErr").textContent = msg;
+        return;
+      }
+      me = { code, playerId: res.playerId, name: res.name };
+      localStorage.setItem("dt_player", JSON.stringify(me));
+      enterWaiting();
+    };
+
+    function enterWaiting() {
+      $("hiName").textContent = "Hi, " + me.name + "!";
+      $("waitCode").textContent = me.code;
+      show("waiting");
+      startPolling();
+    }
+
+    function startPolling() {
+      if (poll) clearInterval(poll);
+      tick();
+      poll = setInterval(tick, 1500);
+    }
+
+    async function tick() {
+      if (!me.code || !me.playerId) return;
+      const s = await api("state", { code: me.code, playerId: me.playerId });
+      if (!s.ok) {
+        if (s.error === "game-not-found") { localStorage.removeItem("dt_player"); location.reload(); }
+        return;
+      }
+      render(s);
+    }
+
+    function render(s) {
+      if (!s.you && s.status !== "lobby") {
+        // We were removed/reset — go back to join.
+        localStorage.removeItem("dt_player");
+        show("join");
+        if (poll) clearInterval(poll);
+        return;
+      }
+
+      if (s.status === "lobby") { show("waiting"); return; }
+
+      if (s.status === "question") {
+        const alreadyAnswered = s.you && s.you.answeredThisQ;
+        if (alreadyAnswered) {
+          showLocked(s);
+        } else {
+          show("answer");
+          renderQuestion(s);
+        }
+        return;
+      }
+
+      if (s.status === "reveal") { stopTimer(); showResult(s); return; }
+
+      if (s.status === "ended") { stopTimer(); if (!finalShown) { showFinal(s); finalShown = true; } return; }
+    }
+
+    function optionBtn(i, text) {
+      const b = document.createElement("button");
+      b.className = "answer a" + i;
+      const sh = document.createElement("span");
+      sh.className = "shape " + SHAPES[i];
+      b.appendChild(sh);
+      const t = document.createElement("span");
+      t.textContent = text;
+      b.appendChild(t);
+      b.onclick = () => submit(i);
+      return b;
+    }
+
+    function renderQuestion(s) {
+      const q = s.question; if (!q) return;
+      $("pCat").textContent = q.category;
+      $("pProgress").textContent = s.qNumber + " / " + s.qCount;
+      $("pText").textContent = q.text;
+      if (renderedQ !== s.current) {
+        const box = $("pAnswers");
+        box.innerHTML = "";
+        q.options.forEach((opt, i) => box.appendChild(optionBtn(i, opt)));
+        renderedQ = s.current;
+        answeredQ = -1;
+      }
+      runTimer(s);
+    }
+
+    async function submit(choice) {
+      if (answeredQ === renderedQ) return;
+      answeredQ = renderedQ;
+      // Optimistic lock screen; server confirms via next poll.
+      $("resultIcon").textContent = "🔒";
+      $("resultText").textContent = "Locked in!";
+      $("resultSub").textContent = "Answer sent — hold tight for the reveal.";
+      $("myScore").textContent = (lastScore || 0);
+      $("myRank").textContent = "";
+      stopTimer();
+      show("result");
+      await api("answer", { code: me.code, playerId: me.playerId, choice });
+    }
+
+    let lastScore = 0;
+    function showLocked(s) {
+      lastScore = s.you ? s.you.score : lastScore;
+      $("resultIcon").textContent = "🔒";
+      $("resultText").textContent = "Locked in!";
+      $("resultSub").textContent = "Waiting for the other players…";
+      $("myScore").textContent = lastScore;
+      $("myRank").textContent = "";
+      show("result");
+    }
+
+    function showResult(s) {
+      const you = s.you || {};
+      lastScore = you.score || 0;
+      const answered = you.answeredThisQ;
+      if (!answered) {
+        $("resultIcon").textContent = "⏰";
+        $("resultText").textContent = "Too slow!";
+        $("resultSub").textContent = "No answer locked in this round.";
+      } else if (you.lastCorrect) {
+        $("resultIcon").textContent = "✅";
+        $("resultText").textContent = "Correct!";
+        $("resultSub").textContent = "+" + you.lastPoints + " points" + (you.streak >= 2 ? "  ·  🔥 " + you.streak + " in a row" : "");
+      } else {
+        $("resultIcon").textContent = "❌";
+        $("resultText").textContent = "Not quite";
+        $("resultSub").textContent = "No points this round — shake it off.";
+      }
+      $("myScore").textContent = lastScore;
+      const rank = rankOf(s.board, me.playerId);
+      $("myRank").textContent = rank ? ("Rank " + rank + " of " + s.board.length) : "";
+      show("result");
+    }
+
+    function rankOf(board, id) {
+      if (!board) return null;
+      const found = board.find(p => p.id === id);
+      return found ? found.rank : null;
+    }
+
+    function showFinal(s) {
+      const rank = rankOf(s.board, me.playerId);
+      const total = s.board ? s.board.length : 0;
+      const you = s.board ? s.board.find(p => p.id === me.playerId) : null;
+      $("finalScore").textContent = you ? you.score : lastScore;
+      let place = "You finished!";
+      let icon = "🎉";
+      if (rank === 1) { place = "🥇 Champion!"; icon = "👑"; }
+      else if (rank === 2) { place = "🥈 2nd Place!"; }
+      else if (rank === 3) { place = "🥉 3rd Place!"; }
+      else if (rank) { place = "#" + rank + " of " + total; }
+      $("finalIcon").textContent = icon;
+      $("finalPlace").textContent = place;
+      show("final");
+    }
+
+    function runTimer(s) {
+      stopTimer();
+      const total = s.seconds * 1000;
+      const update = () => {
+        const left = Math.max(0, total - (Date.now() - s.qStart));
+        $("pBar").style.width = (100 * left / total) + "%";
+        if (left <= 0) stopTimer();
+      };
+      update();
+      timerInt = setInterval(update, 200);
+    }
+    function stopTimer() { if (timerInt) { clearInterval(timerInt); timerInt = null; } }
+
+    if (me.code && me.playerId) enterWaiting();
+  </script>
+</body>
+</html>
