@@ -14,13 +14,20 @@
     <section id="setup" class="center-screen">
       <h1 class="brand">🎬 Host a Game</h1>
       <p class="tagline">Pick your settings, then share the room code that appears.</p>
-      <div class="card" style="margin-top:26px; width:min(460px,92vw); text-align:left;">
-        <label for="num">How many questions?</label>
-        <select id="num">
-          <option value="8">8 — quick round (~6 min)</option>
-          <option value="12" selected>12 — classic (~10 min)</option>
-          <option value="16">16 — long haul (~14 min)</option>
-          <option value="36">36 — the whole vault</option>
+
+      <div id="resumeBox" class="card hidden" style="margin-top:20px; width:min(460px,92vw);">
+        <p class="muted" style="margin:0 0 12px;">You have a game in progress.</p>
+        <button id="resumeBtn" class="btn block">▶ Resume game <span id="resumeCode"></span></button>
+        <button id="discardBtn" class="btn ghost block" style="margin-top:10px;">Start a new one instead</button>
+      </div>
+
+      <div id="setupCard" class="card" style="margin-top:26px; width:min(460px,92vw); text-align:left;">
+        <label for="rounds">How many rounds?</label>
+        <select id="rounds">
+          <option value="6">6 — quick round (~7 min)</option>
+          <option value="10" selected>10 — classic (~12 min)</option>
+          <option value="15">15 — long haul (~18 min)</option>
+          <option value="20">20 — marathon</option>
         </select>
         <div style="height:16px;"></div>
         <label for="seconds">Seconds per question</label>
@@ -33,6 +40,7 @@
         <button id="createBtn" class="btn big block">Create Room →</button>
         <div id="setupErr" class="error"></div>
       </div>
+      <p class="footnote">Each round: the wheel picks a player, they choose a category, everyone races to answer.</p>
     </section>
 
     <!-- ===== LOBBY ===== -->
@@ -43,7 +51,27 @@
       <p class="status-line"><span class="big-count" id="playerCount">0</span> player(s) in the castle</p>
       <div class="chips" id="lobbyChips" style="margin:18px 0;"></div>
       <button id="startBtn" class="btn big" disabled>Start Game 🎉</button>
-      <p class="muted" style="margin-top:12px;">Waiting for players… the Start button lights up once someone joins.</p>
+      <p class="muted" style="margin-top:12px;">Waiting for players… Start lights up once someone joins.</p>
+    </section>
+
+    <!-- ===== PICKING (wheel + category) ===== -->
+    <section id="picking" class="hidden center-screen">
+      <p class="q-cat" id="pickRound"></p>
+      <!-- wheel stage -->
+      <div id="wheelStage">
+        <h2 class="q-text" style="margin-bottom:6px;">🎡 Spin to see who picks!</h2>
+        <div class="wheel-wrap">
+          <div class="wheel-pointer">▼</div>
+          <canvas id="wheel" width="440" height="440"></canvas>
+        </div>
+        <button id="spinBtn" class="btn big" style="margin-top:16px;">Spin the Wheel 🎡</button>
+      </div>
+      <!-- category stage -->
+      <div id="catStage" class="hidden">
+        <h2 class="q-text" style="margin-bottom:4px;">🎉 <span id="pickerName"></span> picks the category!</h2>
+        <p class="muted" style="margin:0 0 18px;">Tap the category they call out.</p>
+        <div class="cat-grid" id="catGrid"></div>
+      </div>
     </section>
 
     <!-- ===== QUESTION ===== -->
@@ -76,7 +104,7 @@
       <h3 style="text-align:center; margin:26px 0 4px; color:var(--gold-2);">🏆 Standings</h3>
       <ol class="board" id="rBoard"></ol>
       <div style="text-align:center; margin-top:22px;">
-        <button id="nextBtn" class="btn big">Next Question →</button>
+        <button id="nextBtn" class="btn big">Next Round →</button>
       </div>
     </section>
 
@@ -96,18 +124,17 @@
   <script>
     const API = "/api/game";
     const $ = (id) => document.getElementById(id);
-    const sections = ["setup", "lobby", "question", "reveal", "ended"];
+    const sections = ["setup", "lobby", "picking", "question", "reveal", "ended"];
     function show(id) { sections.forEach(s => $(s).classList.toggle("hidden", s !== id)); }
-
     const SHAPES = ["triangle", "diamond", "circle", "square"];
+    const WHEEL_COLORS = ["#e8434f", "#2f7ff0", "#f0a830", "#2fb56a", "#a05be0", "#e05ba0", "#2fb5a8", "#e0a02f"];
 
     let game = { code: null, hostToken: null };
-    let poll = null;
-    let lastStatus = null;
-    let timerInt = null;
-    let endedShown = false;
+    let poll = null, timerInt = null, endedShown = false;
+    let spinning = false;               // suppress re-render while the wheel animates
+    let wheelPlayers = [];              // snapshot used to draw + land the wheel
+    let lastCats = [];
 
-    // Restore an in-progress hosted game across refreshes.
     try {
       const saved = JSON.parse(localStorage.getItem("dt_host") || "null");
       if (saved && saved.code && saved.hostToken) game = saved;
@@ -115,12 +142,28 @@
 
     async function api(action, extra) {
       const r = await fetch(API + "?action=" + action, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify(Object.assign({ action }, extra || {})),
       });
       return r.json();
     }
+
+    // ---- Resume handling (fixes the "jumps into an old game" bug) ----
+    // On load we ALWAYS show the setup screen. If a saved game still exists
+    // and hasn't ended, we offer an explicit Resume button — never auto-jump.
+    async function checkResume() {
+      if (!(game.code && game.hostToken)) return;
+      const s = await api("state", { code: game.code, hostToken: game.hostToken, host: 1 });
+      if (s && s.ok && s.status && s.status !== "ended") {
+        $("resumeCode").textContent = game.code;
+        $("resumeBox").classList.remove("hidden");
+      } else {
+        localStorage.removeItem("dt_host");
+        game = { code: null, hostToken: null };
+      }
+    }
+    $("resumeBtn").onclick = () => { $("resumeBox").classList.add("hidden"); enterLobby(); };
+    $("discardBtn").onclick = () => { localStorage.removeItem("dt_host"); game = { code: null, hostToken: null }; $("resumeBox").classList.add("hidden"); };
 
     // ---- Create ----
     $("createBtn").onclick = async () => {
@@ -134,38 +177,45 @@
           : "Couldn't create a room. Try again.";
         return;
       }
+      $("createBtn").disabled = false;
       game = { code: res.code, hostToken: res.hostToken };
       localStorage.setItem("dt_host", JSON.stringify(game));
+      endedShown = false;
       enterLobby();
     };
 
     function enterLobby() {
       $("lobbyCode").textContent = game.code;
-      const base = location.origin + location.pathname.replace(/host\.html$/, "");
-      $("joinUrl").textContent = (location.host + base.replace(location.origin, "") + "play.html").replace(/\/+/g, "/");
+      const base = location.pathname.replace(/host\.html$/, "");
+      $("joinUrl").textContent = (location.host + base + "play.html").replace(/\/+/g, "/");
       show("lobby");
       startPolling();
     }
 
-    // ---- Settings + start ----
+    // ---- Controls ----
     $("startBtn").onclick = async () => {
       $("startBtn").disabled = true;
-      await api("start", {
-        code: game.code, hostToken: game.hostToken,
-        num: parseInt($("num").value, 10),
-        seconds: parseInt($("seconds").value, 10),
-      });
+      await api("start", { code: game.code, hostToken: game.hostToken, rounds: parseInt($("rounds").value, 10), seconds: parseInt($("seconds").value, 10) });
+      tick();
     };
-    $("skipBtn").onclick = () => api("reveal", { code: game.code, hostToken: game.hostToken });
-    $("nextBtn").onclick = () => { $("nextBtn").disabled = true; api("next", { code: game.code, hostToken: game.hostToken }); };
-    $("againBtn").onclick = async () => { endedShown = false; await api("reset", { code: game.code, hostToken: game.hostToken }); };
+    $("skipBtn").onclick = () => api("reveal", { code: game.code, hostToken: game.hostToken }).then(tick);
+    $("nextBtn").onclick = () => { $("nextBtn").disabled = true; api("next", { code: game.code, hostToken: game.hostToken }).then(tick); };
+    $("againBtn").onclick = async () => { endedShown = false; await api("reset", { code: game.code, hostToken: game.hostToken }); tick(); };
+
+    $("spinBtn").onclick = async () => {
+      if (spinning || !wheelPlayers.length) return;
+      $("spinBtn").disabled = true;
+      const r = await api("spin", { code: game.code, hostToken: game.hostToken });
+      if (!r.ok) { $("spinBtn").disabled = false; return; }
+      spinning = true;
+      await animateWheel(r.picker.id);
+      spinning = false;
+      $("spinBtn").disabled = false;
+      showCategories(r.picker.name);
+    };
 
     // ---- Polling / render ----
-    function startPolling() {
-      if (poll) clearInterval(poll);
-      tick();
-      poll = setInterval(tick, 1500);
-    }
+    function startPolling() { if (poll) clearInterval(poll); tick(); poll = setInterval(tick, 1500); }
 
     async function tick() {
       if (!game.code) return;
@@ -175,70 +225,132 @@
     }
 
     function render(s) {
-      // Lobby
       if (s.status === "lobby") {
         show("lobby");
         $("playerCount").textContent = s.playerCount || 0;
-        const chips = $("lobbyChips");
-        chips.innerHTML = "";
-        (s.lobby || []).forEach(p => {
-          const el = document.createElement("div");
-          el.className = "chip";
-          el.textContent = p.name;
-          chips.appendChild(el);
-        });
+        const chips = $("lobbyChips"); chips.innerHTML = "";
+        (s.roster || []).forEach(p => { const el = document.createElement("div"); el.className = "chip"; el.textContent = p.name; chips.appendChild(el); });
         $("startBtn").disabled = (s.playerCount || 0) < 1;
+        return;
       }
-
-      // Question
-      if (s.status === "question") {
-        show("question");
-        renderQuestion(s);
-      }
-
-      // Reveal
+      if (s.status === "picking") { renderPicking(s); return; }
+      if (s.status === "question") { show("question"); renderQuestion(s); return; }
       if (s.status === "reveal") {
-        stopTimer();
-        show("reveal");
-        renderReveal(s);
+        stopTimer(); show("reveal"); renderReveal(s);
         $("nextBtn").disabled = false;
-        $("nextBtn").textContent = (s.qNumber >= s.qCount) ? "See Final Results →" : "Next Question →";
+        $("nextBtn").textContent = (s.round >= s.rounds) ? "See Final Results →" : "Next Round →";
+        return;
       }
-
-      // Ended
-      if (s.status === "ended") {
-        stopTimer();
-        show("ended");
-        if (!endedShown) { renderEnded(s); endedShown = true; }
-      }
-
-      lastStatus = s.status;
+      if (s.status === "ended") { stopTimer(); show("ended"); if (!endedShown) { renderEnded(s); endedShown = true; } return; }
     }
 
+    // ---- Picking / wheel ----
+    function renderPicking(s) {
+      show("picking");
+      $("pickRound").textContent = "Round " + s.round + " of " + s.rounds;
+      lastCats = s.availableCategories || [];
+      if (spinning) return; // don't disturb an in-flight animation
+      if (!s.picker) {
+        // wheel stage
+        $("wheelStage").classList.remove("hidden");
+        $("catStage").classList.add("hidden");
+        $("spinBtn").disabled = false;
+        wheelPlayers = (s.roster || []).slice();
+        drawWheel(0);
+      } else {
+        // a picker is already chosen (e.g. after refresh) -> categories
+        wheelPlayers = (s.roster || []).slice();
+        showCategories(s.picker.name);
+      }
+    }
+
+    function showCategories(name) {
+      $("wheelStage").classList.add("hidden");
+      $("catStage").classList.remove("hidden");
+      $("pickerName").textContent = name;
+      const grid = $("catGrid"); grid.innerHTML = "";
+      (lastCats || []).forEach(c => {
+        const b = document.createElement("button");
+        b.className = "cat-btn";
+        b.innerHTML = '<span class="cat-emoji">' + c.emoji + '</span><span>' + c.label + '</span>';
+        b.onclick = () => { grid.querySelectorAll("button").forEach(x => x.disabled = true); api("pick", { code: game.code, hostToken: game.hostToken, category: c.key }).then(tick); };
+        grid.appendChild(b);
+      });
+    }
+
+    const wheelCanvas = $("wheel");
+    const wctx = wheelCanvas.getContext("2d");
+    let wheelRot = 0;
+
+    function drawWheel(rot) {
+      const n = wheelPlayers.length || 1;
+      const seg = (Math.PI * 2) / n;
+      const cx = wheelCanvas.width / 2, cy = wheelCanvas.height / 2, R = cx - 6;
+      wctx.clearRect(0, 0, wheelCanvas.width, wheelCanvas.height);
+      for (let i = 0; i < n; i++) {
+        const a0 = rot + i * seg, a1 = a0 + seg;
+        wctx.beginPath(); wctx.moveTo(cx, cy); wctx.arc(cx, cy, R, a0, a1); wctx.closePath();
+        wctx.fillStyle = WHEEL_COLORS[i % WHEEL_COLORS.length]; wctx.fill();
+        wctx.strokeStyle = "rgba(255,255,255,.25)"; wctx.lineWidth = 2; wctx.stroke();
+        // label
+        if (wheelPlayers[i]) {
+          wctx.save();
+          wctx.translate(cx, cy); wctx.rotate(a0 + seg / 2);
+          wctx.textAlign = "right"; wctx.fillStyle = "#fff";
+          wctx.font = "700 " + (n > 18 ? 11 : n > 10 ? 14 : 17) + "px Trebuchet MS, sans-serif";
+          let nm = wheelPlayers[i].name; if (nm.length > 12) nm = nm.slice(0, 11) + "…";
+          wctx.fillText(nm, R - 12, 5);
+          wctx.restore();
+        }
+      }
+      // hub
+      wctx.beginPath(); wctx.arc(cx, cy, 26, 0, Math.PI * 2); wctx.fillStyle = "#141a44"; wctx.fill();
+      wctx.strokeStyle = "#f6c453"; wctx.lineWidth = 3; wctx.stroke();
+      wctx.fillStyle = "#f6c453"; wctx.font = "800 22px Trebuchet MS"; wctx.textAlign = "center"; wctx.fillText("🏰", cx, cy + 8);
+      wheelRot = rot;
+    }
+
+    function animateWheel(winnerId) {
+      return new Promise(resolve => {
+        const n = wheelPlayers.length || 1;
+        const idx = Math.max(0, wheelPlayers.findIndex(p => p.id === winnerId));
+        const seg = (Math.PI * 2) / n;
+        // pointer sits at top (angle = -90deg = 1.5π). We want segment center there.
+        const pointer = 1.5 * Math.PI;
+        const target = pointer - (idx * seg + seg / 2);
+        const spins = 5 * Math.PI * 2;
+        const start = wheelRot % (Math.PI * 2);
+        const end = spins + target;
+        const dur = 3600, t0 = performance.now();
+        function frame(t) {
+          const p = Math.min(1, (t - t0) / dur);
+          const ease = 1 - Math.pow(1 - p, 3); // ease-out cubic
+          drawWheel(start + (end - start) * ease);
+          if (p < 1) requestAnimationFrame(frame); else resolve();
+        }
+        requestAnimationFrame(frame);
+      });
+    }
+
+    // ---- Question / reveal / ended ----
     function optionEl(i, text, cls) {
       const b = document.createElement("div");
       b.className = "answer a" + i + (cls || "");
-      const sh = document.createElement("span");
-      sh.className = "shape " + SHAPES[i];
-      b.appendChild(sh);
-      const t = document.createElement("span");
-      t.textContent = text;
-      b.appendChild(t);
+      const sh = document.createElement("span"); sh.className = "shape " + SHAPES[i]; b.appendChild(sh);
+      const t = document.createElement("span"); t.textContent = text; b.appendChild(t);
       return b;
     }
+    function catLabel(key) { const c = (window.__cats || []).find(c => c.key === key); return c ? c.label : key; }
 
     function renderQuestion(s) {
       const q = s.question; if (!q) return;
-      $("qCat").textContent = q.category;
-      $("qProgress").textContent = "Question " + s.qNumber + " of " + s.qCount;
+      $("qCat").textContent = catLabel(q.cat);
+      $("qProgress").textContent = "Round " + s.round + " of " + s.rounds;
       $("qText").textContent = q.text;
       $("answeredCount").textContent = s.answered || 0;
       const box = $("qAnswers");
-      // Only rebuild options when the question changes.
       if (box.dataset.n !== String(s.current)) {
-        box.innerHTML = "";
-        q.options.forEach((opt, i) => box.appendChild(optionEl(i, opt)));
-        box.dataset.n = String(s.current);
+        box.innerHTML = ""; q.options.forEach((opt, i) => box.appendChild(optionEl(i, opt))); box.dataset.n = String(s.current);
       }
       runTimer(s);
     }
@@ -247,40 +359,28 @@
       stopTimer();
       const total = s.seconds * 1000;
       const update = () => {
-        const elapsed = (Date.now() - s.qStart) + (s.now - s.qStart >= 0 ? 0 : 0);
         const left = Math.max(0, total - (Date.now() - s.qStart));
-        const secs = Math.ceil(left / 1000);
-        $("timer").textContent = secs;
+        $("timer").textContent = Math.ceil(left / 1000);
         $("qBar").style.width = (100 * left / total) + "%";
-        if (left <= 0) {
-          stopTimer();
-          // Auto-reveal when the clock runs out.
-          api("reveal", { code: game.code, hostToken: game.hostToken });
-        }
+        if (left <= 0) { stopTimer(); api("reveal", { code: game.code, hostToken: game.hostToken }); }
       };
-      update();
-      timerInt = setInterval(update, 200);
+      update(); timerInt = setInterval(update, 200);
     }
     function stopTimer() { if (timerInt) { clearInterval(timerInt); timerInt = null; } }
 
     function renderReveal(s) {
       const q = s.question; if (!q) return;
-      $("rCat").textContent = q.category;
-      $("rProgress").textContent = "Question " + s.qNumber + " of " + s.qCount;
+      $("rCat").textContent = catLabel(q.cat);
+      $("rProgress").textContent = "Round " + s.round + " of " + s.rounds;
       $("rText").textContent = q.text;
-      const box = $("rAnswers");
-      box.innerHTML = "";
-      const dist = q.dist || [0,0,0,0];
+      const box = $("rAnswers"); box.innerHTML = "";
+      const dist = q.dist || [0, 0, 0, 0];
       q.options.forEach((opt, i) => {
-        const cls = (i === q.correct) ? " right" : " dim";
-        const el = optionEl(i, opt, cls);
-        const c = document.createElement("span");
-        c.className = "count";
-        c.textContent = dist[i];
-        el.appendChild(c);
+        const el = optionEl(i, opt, (i === q.correct) ? " right" : " dim");
+        const c = document.createElement("span"); c.className = "count"; c.textContent = dist[i]; el.appendChild(c);
         box.appendChild(el);
       });
-      $("rFact").innerHTML = "<b>" + (q.options[q.correct]) + ".</b> " + (q.fact || "");
+      $("rFact").innerHTML = "<b>" + q.options[q.correct] + ".</b> " + (q.fact || "");
       renderBoard($("rBoard"), s.board, 6, true);
     }
 
@@ -289,46 +389,42 @@
       (board || []).slice(0, limit).forEach(p => {
         const li = document.createElement("li");
         const streak = p.streak >= 2 ? " 🔥" + p.streak : "";
-        li.innerHTML =
-          '<span class="rank">' + p.rank + '</span>' +
-          '<span class="pname">' + escapeHtml(p.name) + streak + '</span>' +
-          '<span class="pscore">' + p.score +
-          (showDelta && p.lastPoints > 0 ? '<span class="delta">+' + p.lastPoints + '</span>' : '') +
-          '</span>';
+        li.innerHTML = '<span class="rank">' + p.rank + '</span><span class="pname">' + escapeHtml(p.name) + streak +
+          '</span><span class="pscore">' + p.score + (showDelta && p.lastPoints > 0 ? '<span class="delta">+' + p.lastPoints + '</span>' : '') + '</span>';
         ol.appendChild(li);
       });
     }
 
     function renderEnded(s) {
       const board = s.board || [];
-      const podium = $("podium");
-      podium.innerHTML = "";
-      const order = [1, 0, 2]; // second, first, third for a real podium
-      const medals = ["🥇", "🥈", "🥉"];
-      const classes = ["first", "second", "third"];
-      order.forEach(rankIdx => {
-        const p = board[rankIdx];
-        if (!p) return;
-        const div = document.createElement("div");
-        div.className = "pod " + classes[rankIdx];
-        div.innerHTML = '<div class="medal">' + medals[rankIdx] + '</div>' +
-          '<div class="pn">' + escapeHtml(p.name) + '</div>' +
-          '<div class="ps">' + p.score + '</div>';
+      const podium = $("podium"); podium.innerHTML = "";
+      const order = [1, 0, 2], medals = ["🥇", "🥈", "🥉"], classes = ["first", "second", "third"];
+      order.forEach(ri => {
+        const p = board[ri]; if (!p) return;
+        const div = document.createElement("div"); div.className = "pod " + classes[ri];
+        div.innerHTML = '<div class="medal">' + medals[ri] + '</div><div class="pn">' + escapeHtml(p.name) + '</div><div class="ps">' + p.score + '</div>';
         podium.appendChild(div);
       });
       renderBoard($("finalBoard"), board, 20, false);
     }
 
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
-    }
+    function escapeHtml(s) { return String(s).replace(/[&<>"']/g, m => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m])); }
 
-    // Phones/laptops throttle timers when a tab is hidden; refresh instantly on return.
+    // Category labels for display (mirrors api/questions.js CATEGORIES).
+    window.__cats = [
+      { key: "classics", label: "Golden Age Classics" }, { key: "renaissance", label: "Disney Renaissance" },
+      { key: "pixar", label: "Pixar" }, { key: "modern", label: "Modern Disney" },
+      { key: "villains", label: "Villains" }, { key: "songs", label: "Songs & Music" },
+      { key: "voices", label: "Voice Actors" }, { key: "funfacts", label: "Fun Facts & Trivia" },
+    ];
+
+    // Refresh instantly when a hidden tab returns (phones/laptops throttle timers).
     document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
     window.addEventListener("focus", () => tick());
 
-    // If we restored a live game, jump straight back in.
-    if (game.code && game.hostToken) enterLobby();
+    // Always start on the setup screen; offer Resume only if a live game exists.
+    show("setup");
+    checkResume();
   </script>
 </body>
 </html>

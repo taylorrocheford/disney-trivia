@@ -335,6 +335,28 @@ input.code-input {
 .pod.second { height: 160px; }
 .pod.third { height: 130px; }
 
+/* Spin-the-wheel */
+.wheel-wrap { position: relative; display: inline-block; margin: 8px auto 0; }
+.wheel-wrap canvas { max-width: min(440px, 82vw); height: auto; filter: drop-shadow(0 12px 30px rgba(0,0,0,.45)); }
+.wheel-pointer {
+  position: absolute; top: -6px; left: 50%; transform: translateX(-50%);
+  font-size: 34px; color: var(--gold-2); z-index: 2;
+  text-shadow: 0 2px 4px rgba(0,0,0,.5); pointer-events: none;
+}
+
+/* Category picker */
+.cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; max-width: 620px; margin: 0 auto; width: 100%; }
+.cat-btn {
+  display: flex; align-items: center; gap: 12px;
+  border: 1.5px solid var(--line); background: var(--panel);
+  color: var(--text); font-family: inherit; font-weight: 800; font-size: 18px;
+  padding: 18px 20px; border-radius: 14px; cursor: pointer; text-align: left;
+  transition: transform .08s ease, border-color .15s ease, background .15s ease;
+}
+.cat-btn:hover { transform: translateY(-2px); border-color: var(--gold); background: rgba(246,196,83,.1); }
+.cat-btn:disabled { opacity: .4; cursor: default; transform: none; }
+.cat-btn .cat-emoji { font-size: 26px; }
+
 .footnote { margin-top: 26px; color: var(--muted); font-size: 13px; text-align: center; }
 
 .status-line { color: var(--muted); font-size: 18px; margin-top: 10px; }
@@ -343,4 +365,5 @@ input.code-input {
 @media (max-width: 560px) {
   .answers { grid-template-columns: 1fr; }
   .answer { min-height: 72px; }
+  .cat-grid { grid-template-columns: 1fr; }
 }

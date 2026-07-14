@@ -5,11 +5,17 @@ on a big screen; up to **35 players** join from their phones with a 4-character 
 code. **Speed and accuracy both count** — the faster you lock in a correct answer, the
 more points you score, with bonus points for answer streaks.
 
+Each round works like this: a **spin-the-wheel of players' names** picks who gets to
+**choose the category**, then everyone races to answer a question from that category.
+
 - **Home** (`index.html`) — pick Host or Join
-- **Host** (`host.html`) — big-screen controller: room code, live lobby, questions,
-  answer reveal with a live vote breakdown, running leaderboard, and a final podium
-- **Player** (`play.html`) — phone screen: join, tap answers, see your points & rank
-- **36 questions** across Classics, Pixar, Villains, Songs, Voice Actors, and deep cuts
+- **Host** (`host.html`) — big-screen controller: room code, live lobby, the spin
+  wheel, category picker, questions, answer reveal with a live vote breakdown, running
+  leaderboard, and a final podium
+- **Player** (`play.html`) — phone screen: join, see who's picking, tap answers, see
+  your points & rank
+- **120+ questions** across 8 categories: Golden Age Classics, Disney Renaissance,
+  Pixar, Modern Disney, Villains, Songs & Music, Voice Actors, and Fun Facts & Trivia
 - The answer key lives on the server only — players can't peek in their browser
 
 ---
@@ -44,12 +50,14 @@ That's it — the game is ready.
 3. A big room code appears. Everyone else opens the site on their phone, taps
    **📱 Join a Game**, and enters that code + their name.
 4. When everyone's in, click **Start Game**.
-5. For each question: players tap an answer on their phone; the host screen shows the
+5. Each round starts on the **wheel**: click **Spin the Wheel** and it lands on a
+   random player. That player calls out a category — you tap it on the host screen.
+6. The question appears: players tap an answer on their phone; the host screen shows the
    timer and how many have answered. Click **Reveal Answer Now** to end early, or let
    the clock run out (it reveals automatically).
-6. The reveal shows the correct answer, how the room voted, a fun fact, and the
-   standings. Click **Next Question**.
-7. After the last question you get a podium and full ranking. **Play Again** keeps the
+7. The reveal shows the correct answer, how the room voted, a fun fact, and the
+   standings. Click **Next Round** to spin again.
+8. After the last round you get a podium and full ranking. **Play Again** keeps the
    same crowd and resets scores.
 
 ### Scoring
@@ -64,15 +72,17 @@ Open `api/questions.js`. Each entry looks like:
 
 ```js
 {
+  cat: "pixar",        // one of the CATEGORIES keys at the top of the file
   q: "The question text",
-  category: "Pixar",
   options: ["A", "B", "C", "D"],
   correct: 1,          // 0 = first option, 1 = second, etc.
   fact: "A fun blurb shown on the host screen at reveal time."
 }
 ```
 
-Add or edit entries, then redeploy (push to GitHub, or re-drag the folder into Vercel).
+Category keys are: `classics`, `renaissance`, `pixar`, `modern`, `villains`, `songs`,
+`voices`, `funfacts`. Add or edit entries, then redeploy (push to GitHub, or re-drag
+the folder into Vercel).
 
 ## Notes
 - Player and host screens refresh every ~1.5 seconds. For a 35-player, 20-minute game
